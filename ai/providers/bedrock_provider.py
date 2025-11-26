@@ -1,0 +1,123 @@
+"""AWS Bedrock provider implementation"""
+
+import json
+from typing import Dict, Any, Optional
+import boto3
+from .base_provider import BaseLLMProvider
+
+class BedrockProvider(BaseLLMProvider):
+    """AWS Bedrock API provider"""
+    
+    def __init__(self, model_name: str = "anthropic.claude-3-sonnet-20240229-v1:0", 
+                 region_name: str = "us-east-1", **kwargs):
+        super().__init__(model_name, **kwargs)
+        self.client = boto3.client('bedrock-runtime', region_name=region_name)
+    
+    def generate(self, prompt: str, system_prompt: Optional[str] = None) -> str:
+        """Generate text from prompt
+        
+        Args:
+            prompt: User prompt
+            system_prompt: Optional system prompt
+            
+        Returns:
+            Generated text
+        """
+        try:
+            # Format request based on model type
+            if "anthropic" in self.model_name.lower():
+                return self._generate_anthropic(prompt, system_prompt)
+            elif "titan" in self.model_name.lower():
+                return self._generate_titan(prompt, system_prompt)
+            else:
+                return "Unsupported model type"
+        
+        except Exception as e:
+            print(f"Bedrock API error: {e}")
+            return f"Error generating response: {str(e)}"
+    
+    def _generate_anthropic(self, prompt: str, system_prompt: Optional[str] = None) -> str:
+        """Generate using Anthropic models on Bedrock"""
+        request_body = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens
+        }
+        
+        if system_prompt:
+            request_body["system"] = system_prompt
+        
+        response = self.client.invoke_model(
+            modelId=self.model_name,
+            body=json.dumps(request_body)
+        )
+        
+        response_body = json.loads(response['body'].read())
+        return response_body['content'][0]['text']
+    
+    def _generate_titan(self, prompt: str, system_prompt: Optional[str] = None) -> str:
+        """Generate using Titan models on Bedrock"""
+        full_prompt = prompt
+        if system_prompt:
+            full_prompt = f"{system_prompt}\n\n{prompt}"
+        
+        request_body = {
+            "inputText": full_prompt,
+            "textGenerationConfig": {
+                "temperature": self.temperature,
+                "maxTokenCount": self.max_tokens
+            }
+        }
+        
+        response = self.client.invoke_model(
+            modelId=self.model_name,
+            body=json.dumps(request_body)
+        )
+        
+        response_body = json.loads(response['body'].read())
+        return response_body['results'][0]['outputText']
+    
+    def generate_json(self, prompt: str, system_prompt: Optional[str] = None) -> Dict[str, Any]:
+        """Generate JSON response from prompt
+        
+        Args:
+            prompt: User prompt (should request JSON format)
+            system_prompt: Optional system prompt
+            
+        Returns:
+            Parsed JSON response
+        """
+        response_text = ""
+        try:
+            if "JSON" not in prompt and "json" not in prompt:
+                prompt += "\n\nRespond with valid JSON only."
+            
+            response_text = self.generate(prompt, system_prompt)
+            
+            # Clean response
+            response_text = response_text.strip()
+            if response_text.startswith("```json"):
+                response_text = response_text[7:]
+            if response_text.startswith("```"):
+                response_text = response_text[3:]
+            if response_text.endswith("```"):
+                response_text = response_text[:-3]
+            
+            response_text = response_text.strip()
+            
+            return json.loads(response_text)
+        
+        except json.JSONDecodeError as e:
+            print(f"JSON parsing error: {e}")
+            return {
+                "error": f"Failed to parse JSON response: {e}",
+                "raw_response": response_text
+            }
+        except Exception as e:
+            print(f"Error: {e}")
+            return {
+                "error": str(e),
+                "raw_response": response_text
+            }
+
