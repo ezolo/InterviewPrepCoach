@@ -200,30 +200,49 @@ class QuestionService:
         if not response_clean:
             return []
         
-        # Try to locate a complete JSON block
+        # Try to locate a complete JSON block (array or object)
         json_block = QuestionService._extract_json_block(response_clean)
-        if not json_block:
-            print("[ERROR] Could not locate JSON block in LLM response")
-            print(f"[DEBUG] Response snippet: {response_text[:500]}")
-            return []
+        if json_block:
+            try:
+                parsed = json.loads(json_block)
+            except json.JSONDecodeError as e:
+                print(f"[ERROR] Failed to parse LLM response as JSON: {e}")
+                print(f"[DEBUG] Response snippet: {response_text[:500]}")
+                parsed = None
+        else:
+            parsed = None
         
-        try:
-            parsed = json.loads(json_block)
-        except json.JSONDecodeError as e:
-            print(f"[ERROR] Failed to parse LLM response as JSON: {e}")
-            print(f"[DEBUG] Response snippet: {response_text[:500]}")
-            return []
-        
+        # Happy path: direct list or wrapped list
         if isinstance(parsed, list):
             return parsed
         if isinstance(parsed, dict):
-            if 'questions' in parsed:
+            if 'questions' in parsed and isinstance(parsed['questions'], list):
                 return parsed.get('questions', [])
             # Some providers might wrap data differently
             if 'data' in parsed and isinstance(parsed['data'], list):
                 return parsed['data']
         
-        print(f"[WARN] Parsed JSON did not contain questions list (type={type(parsed)})")
+        # Fallback: tolerant parsing like PracticeService, for providers (e.g., Ollama) that
+        # return almost-correct JSON. We scan for individual { ... } blocks and parse each.
+        try:
+            import re
+            objs: List[Dict[str, Any]] = []
+            for m in re.finditer(r'\{[\s\S]*?\}', response_clean):
+                block = m.group(0)
+                try:
+                    obj = json.loads(block)
+                    # Only keep things that look like question objects
+                    if isinstance(obj, dict) and ('question' in obj or 'question_text' in obj):
+                        objs.append(obj)
+                except json.JSONDecodeError:
+                    continue
+            if objs:
+                return objs
+        except Exception as fallback_err:
+            print(f"[ERROR] Fallback question parsing failed: {fallback_err}")
+        
+        print(f"[WARN] Parsed JSON did not contain questions list or could not recover questions")
+        print(f"[DEBUG] Response snippet: {response_text[:500]}")
         return []
     
     @staticmethod

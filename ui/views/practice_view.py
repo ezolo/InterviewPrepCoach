@@ -1070,6 +1070,10 @@ class PracticeView:
             if not self.sessions_list:
                 return
             
+            # Avoid calling update before the list is attached to the page
+            if not getattr(self.sessions_list, "page", None):
+                return
+            
             self.sessions_list.controls.clear()
             
             if not sessions:

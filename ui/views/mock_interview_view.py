@@ -299,26 +299,38 @@ class MockInterviewView:
                 'prep_time': int(prep_time_field.value),
                 'feedback_mode': feedback_mode_dropdown.value
             }
+
+            # Simple UI feedback while questions are being generated
+            if hasattr(self, "create_button") and self.create_button:
+                self.create_button.text = "Generating questions..."
+                self.create_button.disabled = True
+                self.page.update()
             
-            session_id = MockInterviewService.create_session(
-                user_id=self.user_id,
-                session_name=session_name_field.value,
-                format_type=format_options.value,
-                question_source=question_source_options.value,
-                question_set_id=int(question_set_dropdown.value) if question_set_dropdown.value else None,
-                resume_id=int(resume_dropdown.value) if resume_dropdown.value else None,
-                jd_id=int(jd_dropdown.value) if jd_dropdown.value else None,
-                config=config
-            )
-            
-            if session_id:
-                self.current_session_id = session_id
-                self.session_config = config
-                self._start_live_session()
-            else:
-                self._show_error("Failed to create session")
+            try:
+                session_id = MockInterviewService.create_session(
+                    user_id=self.user_id,
+                    session_name=session_name_field.value,
+                    format_type=format_options.value,
+                    question_source=question_source_options.value,
+                    question_set_id=int(question_set_dropdown.value) if question_set_dropdown.value else None,
+                    resume_id=int(resume_dropdown.value) if resume_dropdown.value else None,
+                    jd_id=int(jd_dropdown.value) if jd_dropdown.value else None,
+                    config=config
+                )
+                
+                if session_id:
+                    self.current_session_id = session_id
+                    self.session_config = config
+                    self._start_live_session()
+                else:
+                    self._show_error("Failed to create session (no questions generated)")
+            finally:
+                if hasattr(self, "create_button") and self.create_button:
+                    self.create_button.text = "🚀 Start Mock Interview"
+                    self.create_button.disabled = False
+                    self.page.update()
         
-        create_button = ft.ElevatedButton(
+        self.create_button = ft.ElevatedButton(
             "🚀 Start Mock Interview",
             icon=ft.Icons.PLAY_ARROW,
             on_click=create_session,
@@ -360,7 +372,7 @@ class MockInterviewView:
             ], spacing=20, wrap=True),
             ft.Divider(),
             
-            create_button
+            self.create_button
         ], spacing=15, scroll=ft.ScrollMode.AUTO)
         
         return wizard_content
@@ -473,6 +485,19 @@ class MockInterviewView:
             width=600
         )
         
+        # Create submit button first so it can be used in response controls
+        self.submit_button = ft.ElevatedButton(
+            "✓ Submit Response",
+            icon=ft.Icons.CHECK_CIRCLE,
+            on_click=lambda e: self._submit_response(),
+            style=ft.ButtonStyle(
+                bgcolor=AppTheme.PRIMARY,
+                color="white"
+            ),
+            visible=True,
+            disabled=False
+        )
+        
         # Response controls
         response_controls = self._build_response_controls()
         
@@ -487,16 +512,6 @@ class MockInterviewView:
             "⏭ Skip",
             icon=ft.Icons.SKIP_NEXT,
             on_click=lambda e: self._skip_question()
-        )
-        
-        self.submit_button = ft.ElevatedButton(
-            "✓ Submit Response",
-            icon=ft.Icons.CHECK_CIRCLE,
-            on_click=lambda e: self._submit_response(),
-            style=ft.ButtonStyle(
-                bgcolor=AppTheme.PRIMARY,
-                color="white"
-            )
         )
         
         next_button = ft.ElevatedButton(
@@ -540,13 +555,16 @@ class MockInterviewView:
             ft.Divider(),
             response_controls,
             ft.Divider(),
-            ft.Row([
-                flag_button,
-                skip_button,
-                ft.Container(expand=True),
-                self.submit_button,
-                next_button
-            ], spacing=10, wrap=True)
+            ft.Container(
+                content=ft.Row([
+                    flag_button,
+                    skip_button,
+                    ft.Container(expand=True),
+                    self.submit_button,
+                    next_button
+                ], spacing=10, wrap=True),
+                padding=10
+            )
         ], spacing=15, scroll=ft.ScrollMode.AUTO)
         
         self._start_timer()
@@ -606,7 +624,7 @@ class MockInterviewView:
             padding=15,
             bgcolor="#F5F5F5",
             border_radius=8,
-            visible=self.response_mode == "audio"
+            visible=False  # Will be shown when audio mode is selected
         )
         
         # Video controls
@@ -638,15 +656,36 @@ class MockInterviewView:
             padding=15,
             bgcolor="#F5F5F5",
             border_radius=8,
-            visible=self.response_mode == "video"
+            visible=False  # Will be shown when video mode is selected
         )
+        
+        # Create a submit button for response controls (separate instance since Flet controls can only have one parent)
+        response_submit_button = ft.ElevatedButton(
+            "✓ Submit Response",
+            icon=ft.Icons.CHECK_CIRCLE,
+            on_click=lambda e: self._submit_response(),
+            style=ft.ButtonStyle(
+                bgcolor=AppTheme.PRIMARY,
+                color="white"
+            ),
+            width=200
+        )
+        
+        # Store reference for state management
+        if not hasattr(self, "response_submit_button"):
+            self.response_submit_button = response_submit_button
         
         controls = ft.Column([
             ft.Text("Response Mode", size=14, weight=ft.FontWeight.BOLD),
             self.mode_selector,
             self.response_text_field,
             self.audio_container,
-            self.video_container
+            self.video_container,
+            ft.Divider(),
+            ft.Row([
+                ft.Container(expand=True),
+                response_submit_button
+            ], spacing=10)
         ], spacing=10)
         
         self._update_response_mode_visibility()
@@ -657,10 +696,17 @@ class MockInterviewView:
         if not self.current_session_id or not self.session_questions:
             return
         
+        # Bounds check
+        if self.current_question_index >= len(self.session_questions):
+            self._show_error("Question index out of bounds. Please restart the session.")
+            return
+        
         current_question = self.session_questions[self.current_question_index]
+        # Handle both database format (question_id) and generated format (question_id or id)
         question_id = current_question.get('question_id') or current_question.get('id')
         if not question_id:
-            self._show_error("Question data is incomplete.")
+            print(f"[ERROR] Question at index {self.current_question_index} has no question_id. Question data: {current_question}")
+            self._show_error("Question data is incomplete. This may indicate an issue with question generation. Please restart the session.")
             return
         
         notes_value = self.notes_field.value if self.notes_field else ""
@@ -712,13 +758,17 @@ class MockInterviewView:
         
         if response_id:
             # Show success and enable next button
-            self.next_button.visible = True
+            if hasattr(self, "next_button") and self.next_button:
+                self.next_button.visible = True
+                self.next_button.disabled = False
             if self.response_text_field:
                 self.response_text_field.disabled = True
             if self.notes_field:
                 self.notes_field.disabled = True
-            if self.submit_button:
+            if hasattr(self, "submit_button") and self.submit_button:
                 self.submit_button.disabled = True
+            if hasattr(self, "response_submit_button") and self.response_submit_button:
+                self.response_submit_button.disabled = True
             self._stop_timer()
             self._stop_recordings()
             self.page.update()
@@ -742,8 +792,10 @@ class MockInterviewView:
             self.audio_record_button.disabled = not (self.response_mode == "audio")
         if self.video_record_button:
             self.video_record_button.disabled = not (self.response_mode == "video")
-        if self.submit_button:
+        if hasattr(self, "submit_button") and self.submit_button:
             self.submit_button.disabled = False
+        if hasattr(self, "response_submit_button") and self.response_submit_button:
+            self.response_submit_button.disabled = False
     
     def _format_time(self, seconds: int) -> str:
         minutes = seconds // 60
@@ -818,8 +870,10 @@ class MockInterviewView:
             self.notes_field.disabled = False
         if self.mode_selector:
             self.mode_selector.value = "written"
-        if self.submit_button:
+        if hasattr(self, "submit_button") and self.submit_button:
             self.submit_button.disabled = False
+        if hasattr(self, "response_submit_button") and self.response_submit_button:
+            self.response_submit_button.disabled = False
         if hasattr(self, "next_button") and self.next_button:
             self.next_button.visible = False
     
@@ -982,10 +1036,12 @@ class MockInterviewView:
     def _get_question_text(self, question: Optional[Dict]) -> str:
         if not question:
             return "No question text"
+        # Handle both database format (question_text) and generated format (question)
         return (
             question.get('question_text')
             or question.get('question')
             or question.get('prompt')
+            or str(question)  # Fallback to string representation
             or "No question text"
         )
     
@@ -1040,19 +1096,57 @@ class MockInterviewView:
         self.live_session_active = False
         
         # Get user sessions
-        sessions = MockInterviewService.get_user_sessions(self.user_id, limit=10)
+        all_sessions = MockInterviewService.get_user_sessions(self.user_id)
+        recent_sessions = all_sessions[:10] if all_sessions else []
+        
+        # Calculate statistics
+        total_sessions = len(all_sessions) if all_sessions else 0
+        completed_sessions = len([s for s in all_sessions if s.get('status') == 'completed']) if all_sessions else 0
+        in_progress = len([s for s in all_sessions if s.get('status') == 'in_progress']) if all_sessions else 0
         
         # Build analytics view
         analytics_content = ft.Column([
             ft.Text("📊 Analytics Dashboard", size=24, weight=ft.FontWeight.BOLD),
             ft.Divider(),
-            ft.Text(f"Total Sessions: {len(sessions)}", size=16),
+            # Statistics cards
+            ft.Row([
+                ft.Container(
+                    content=ft.Column([
+                        ft.Text("Total Sessions", size=12, color="grey"),
+                        ft.Text(str(total_sessions), size=24, weight=ft.FontWeight.BOLD, color=AppTheme.PRIMARY)
+                    ], spacing=5, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                    padding=20,
+                    bgcolor="#F5F5F5",
+                    border_radius=8,
+                    width=150
+                ),
+                ft.Container(
+                    content=ft.Column([
+                        ft.Text("Completed", size=12, color="grey"),
+                        ft.Text(str(completed_sessions), size=24, weight=ft.FontWeight.BOLD, color=AppTheme.SUCCESS)
+                    ], spacing=5, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                    padding=20,
+                    bgcolor="#F5F5F5",
+                    border_radius=8,
+                    width=150
+                ),
+                ft.Container(
+                    content=ft.Column([
+                        ft.Text("In Progress", size=12, color="grey"),
+                        ft.Text(str(in_progress), size=24, weight=ft.FontWeight.BOLD, color=AppTheme.INFO)
+                    ], spacing=5, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                    padding=20,
+                    bgcolor="#F5F5F5",
+                    border_radius=8,
+                    width=150
+                ),
+            ], spacing=15, wrap=True),
             ft.Divider(),
             ft.Text("Recent Sessions:", size=18, weight=ft.FontWeight.BOLD),
             ft.Column([
-                self._build_session_card(session) for session in sessions
-            ], spacing=10, scroll=ft.ScrollMode.AUTO)
-        ], spacing=15)
+                self._build_session_card(session) for session in recent_sessions
+            ], spacing=10, scroll=ft.ScrollMode.AUTO) if recent_sessions else ft.Text("No sessions yet. Create your first mock interview!", size=14, color="grey", italic=True)
+        ], spacing=15, scroll=ft.ScrollMode.AUTO)
         
         self.content_area.content = analytics_content
         self.page.update()
@@ -1083,22 +1177,161 @@ class MockInterviewView:
     
     def _view_session_details(self, session_id: int):
         """View detailed session information"""
-        # Implementation for viewing session details
-        self._show_success(f"Viewing session {session_id}")
+        session = MockInterviewService.get_session(session_id)
+        if not session:
+            self._show_error("Session not found")
+            return
+        
+        responses = MockInterviewService.get_session_responses(session_id)
+        feedback = MockInterviewService.get_session_feedback(session_id)
+        
+        # Build detailed view
+        details_content = ft.Column([
+            ft.Row([
+                ft.Text("📋 Session Details", size=24, weight=ft.FontWeight.BOLD),
+                ft.ElevatedButton("← Back", on_click=lambda e: self._show_analytics(None))
+            ], spacing=10),
+            ft.Divider(),
+            ft.Container(
+                content=ft.Column([
+                    ft.Text(f"Session: {session.get('session_name', 'Unnamed')}", size=18, weight=ft.FontWeight.BOLD),
+                    ft.Text(f"Format: {session.get('format_type', 'traditional').title()}", size=14),
+                    ft.Text(f"Status: {session.get('status', 'unknown').title()}", size=14),
+                    ft.Text(f"Total Questions: {session.get('total_questions', 0)}", size=14),
+                    ft.Text(f"Created: {session.get('created_at', 'Unknown')}", size=12, color="grey"),
+                    ft.Text(f"Started: {session.get('started_at', 'Not started')}", size=12, color="grey"),
+                    ft.Text(f"Completed: {session.get('completed_at', 'Not completed')}", size=12, color="grey"),
+                ], spacing=8),
+                padding=15,
+                bgcolor="#F5F5F5",
+                border_radius=8
+            ),
+            ft.Divider(),
+            ft.Text(f"Responses ({len(responses)}):", size=18, weight=ft.FontWeight.BOLD),
+            ft.Column([
+                self._build_response_card(response, idx) 
+                for idx, response in enumerate(responses)
+            ], spacing=10, scroll=ft.ScrollMode.AUTO) if responses else ft.Text("No responses yet", size=14, color="grey"),
+            ft.Divider(),
+            ft.Text(f"Feedback ({len(feedback)}):", size=18, weight=ft.FontWeight.BOLD),
+            ft.Column([
+                self._build_feedback_card(fb) 
+                for fb in feedback
+            ], spacing=10, scroll=ft.ScrollMode.AUTO) if feedback else ft.Text("No feedback available", size=14, color="grey"),
+        ], spacing=15, scroll=ft.ScrollMode.AUTO)
+        
+        self.content_area.content = details_content
+        self.page.update()
+    
+    def _build_response_card(self, response: Dict, index: int) -> ft.Container:
+        """Build a response card for display"""
+        question_text = response.get('question_text', 'Unknown question')
+        response_text = response.get('response_text', 'No response text')
+        mode = response.get('response_mode', 'written')
+        duration = response.get('duration_seconds', 0)
+        
+        return ft.Container(
+            content=ft.Column([
+                ft.Text(f"Question {index + 1}: {question_text[:100]}...", size=14, weight=ft.FontWeight.BOLD),
+                ft.Text(f"Mode: {mode.title()} | Duration: {duration}s", size=12, color="grey"),
+                ft.Text(f"Response: {response_text[:200]}...", size=12) if response_text else ft.Text("No response", size=12, color="grey"),
+            ], spacing=5),
+            padding=15,
+            bgcolor="#F9F9F9",
+            border_radius=8,
+            border=ft.border.all(1, "#E0E0E0")
+        )
+    
+    def _build_feedback_card(self, feedback: Dict) -> ft.Container:
+        """Build a feedback card for display"""
+        feedback_type = feedback.get('feedback_type', 'unknown')
+        score = feedback.get('score_overall')
+        recommendations = feedback.get('recommendations', '')
+        
+        return ft.Container(
+            content=ft.Column([
+                ft.Text(f"Type: {feedback_type.title()}", size=14, weight=ft.FontWeight.BOLD),
+                ft.Text(f"Score: {score}/100", size=14) if score else ft.Text("No score", size=12, color="grey"),
+                ft.Text(f"Recommendations: {recommendations[:200]}...", size=12) if recommendations else ft.Text("No recommendations", size=12, color="grey"),
+            ], spacing=5),
+            padding=15,
+            bgcolor="#F9F9F9",
+            border_radius=8,
+            border=ft.border.all(1, "#E0E0E0")
+        )
     
     def _show_library(self, e):
         """Show practice library"""
-        sessions = MockInterviewService.get_user_sessions(self.user_id)
+        sessions = MockInterviewService.get_user_sessions(self.user_id) or []
+        
+        # Filter options
+        status_filter = ft.Dropdown(
+            label="Filter by Status",
+            options=[
+                ft.dropdown.Option("all", "All Sessions"),
+                ft.dropdown.Option("completed", "Completed"),
+                ft.dropdown.Option("in_progress", "In Progress"),
+                ft.dropdown.Option("draft", "Draft")
+            ],
+            value="all",
+            width=200
+        )
+        
+        format_filter = ft.Dropdown(
+            label="Filter by Format",
+            options=[
+                ft.dropdown.Option("all", "All Formats"),
+                ft.dropdown.Option("traditional", "Traditional"),
+                ft.dropdown.Option("technical", "Technical"),
+                ft.dropdown.Option("behavioral", "Behavioral"),
+                ft.dropdown.Option("case", "Case Study")
+            ],
+            value="all",
+            width=200
+        )
+        
+        # Session list container that will be updated
+        sessions_list_container = ft.Column(
+            [self._build_session_card(session) for session in sessions] if sessions else [ft.Text("No sessions yet. Create your first mock interview!", size=14, color="grey", italic=True)],
+            spacing=10,
+            scroll=ft.ScrollMode.AUTO
+        )
+        
+        count_text = ft.Text(f"Showing {len(sessions)} sessions", size=12, color="grey")
+        
+        def apply_filters(e):
+            filtered_sessions = sessions.copy()
+            
+            if status_filter.value != "all":
+                filtered_sessions = [s for s in filtered_sessions if s.get('status') == status_filter.value]
+            if format_filter.value != "all":
+                filtered_sessions = [s for s in filtered_sessions if s.get('format_type') == format_filter.value]
+            
+            # Update the sessions list
+            sessions_list_container.controls = [
+                self._build_session_card(session) for session in filtered_sessions
+            ] if filtered_sessions else [ft.Text("No sessions match the filters.", size=14, color="grey", italic=True)]
+            
+            # Update count
+            count_text.value = f"Showing {len(filtered_sessions)} of {len(sessions)} sessions"
+            
+            self.page.update()
+        
+        status_filter.on_change = apply_filters
+        format_filter.on_change = apply_filters
         
         library_content = ft.Column([
             ft.Text("📚 Practice Library", size=24, weight=ft.FontWeight.BOLD),
             ft.Divider(),
-            ft.Text(f"Total Sessions: {len(sessions)}", size=16),
+            ft.Row([
+                status_filter,
+                format_filter,
+                ft.Container(expand=True),
+                count_text
+            ], spacing=15, wrap=True),
             ft.Divider(),
-            ft.Column([
-                self._build_session_card(session) for session in sessions
-            ], spacing=10, scroll=ft.ScrollMode.AUTO)
-        ], spacing=15)
+            sessions_list_container
+        ], spacing=15, scroll=ft.ScrollMode.AUTO)
         
         self.content_area.content = library_content
         self.page.update()
