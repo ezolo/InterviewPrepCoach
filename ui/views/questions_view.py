@@ -258,6 +258,9 @@ class QuestionsView:
         difficulty = question.get('difficulty', 'medium')
         ideal_points = question.get('ideal_answer_points', [])
         
+        # Handle both 'question' (from generated) and 'question_text' (from database)
+        question_text = question.get('question_text') or question.get('question') or 'No question text available'
+        
         return ft.Card(
             content=ft.Container(
                 content=ft.Column([
@@ -276,7 +279,7 @@ class QuestionsView:
                             border_radius=3
                         )
                     ], spacing=10),
-                    ft.Text(question.get('question', ''), size=15, weight=ft.FontWeight.W_500),
+                    ft.Text(question_text, size=15, weight=ft.FontWeight.W_500),
                     ft.Divider(),
                     *([ft.Text("💡 Ideal Answer Points:", size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.PRIMARY)] if ideal_points else []),
                     ft.Column([
@@ -327,6 +330,11 @@ class QuestionsView:
                         ideal_points = json.loads(ideal_points)
                     except:
                         ideal_points = []
+                
+                # Ensure question text is accessible via 'question' key for compatibility
+                # Database stores it as 'question_text', but UI expects 'question'
+                if 'question_text' in q and 'question' not in q:
+                    q['question'] = q['question_text']
                 
                 q['ideal_answer_points'] = ideal_points
                 self.questions_container.controls.append(
